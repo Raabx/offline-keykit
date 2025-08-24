@@ -192,6 +192,5 @@ This software is provided **“as is”**, without warranty of any kind. Use at 
 
 ---
 
-If your current README shows up as a gray, monospaced block, delete any leading ` ```…` and trailing ` ``` ` from the file and paste the version above. Want me to generate PR-ready text for the two script files too so the repo renders cleanly?
 
 
