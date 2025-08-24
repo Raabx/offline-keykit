@@ -1,171 +1,75 @@
 #!/usr/bin/env python3
-# offline-keykit: btc_bip39_tool.py
+# -*- coding: utf-8 -*-
+# Offline BTC BIP39/BIP32/BIP84 tool (mnemonic + passphrase + zpub + bech32 P2WPKH)
+# Standard library only. No network. Pure-Python secp256k1 + bech32 + base58.
 #
-# Air-gapped Bitcoin key tool:
-#  - Generates or accepts a 12/24-word BIP39 mnemonic (+ optional passphrase)
-#  - Derives BIP84 (P2WPKH) account xpub/zpub at m/84'/0'/0'
-#  - Prints the first N bech32 receive addresses (m/84'/0'/0'/0/i)
+# Outputs (safe to take online):
+#  - zpub (BIP84, account m/84'/0'/0')
+#  - xpub (same node, legacy version bytes for compatibility)
+#  - first N receive addresses (m/84'/0'/0'/0/i), bech32 (bc1…)
 #
-# 100% offline, single-file, standard-library only. NO network, NO third-party libs.
+# Secrets (NEVER take online):
+#  - 12/24-word mnemonic
+#  - optional BIP39 passphrase
 #
-# USAGE (offline):
-#   python3 btc_bip39_tool.py
-#
-# SECURITY:
-#   * Run on an offline OS.
-#   * Write mnemonic & passphrase on PAPER only (two copies, separate safes).
-#   * Bring back online ONLY the xpub/zpub and addresses (public).
-#
-# NOTES:
-#   * You must also provide the BIP39 English wordlist file (see README).
-#   * This script uses PBKDF2-HMAC-SHA512 (BIP39) and HMAC-SHA512/BIP32
-#     with secp256k1 for derivation. Hashes via hashlib; RIPEMD-160 via hashlib.new('ripemd160').
-#   * Very small, not optimized for speed — fine for single-run offline use.
+# Copyright (c) 2025 RAABX. Apache-2.0
 
-import os, sys, json, hmac, hashlib, binascii
+import os, sys, hmac, hashlib, binascii, unicodedata, secrets, getpass, textwrap
+from typing import Tuple, Optional, List
 
-WORDLIST_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "bip39_english.txt")
-COIN = 0  # 0=Bitcoin mainnet
-PURPOSE = 84  # BIP84 (P2WPKH)
-ACCOUNT = 0
-CHANGE = 0  # external (receive)
-DEFAULT_ADDR_COUNT = 10
+# --------- Utils ---------
+def hmac_sha512(key: bytes, data: bytes) -> bytes:
+    return hmac.new(key, data, hashlib.sha512).digest()
 
-def die(m): print(f"[fatal] {m}"); sys.exit(1)
-def ask(p):
-    try: return input(p)
-    except KeyboardInterrupt:
-        print("\n[aborted]"); sys.exit(1)
+def sha256(b: bytes) -> bytes:
+    return hashlib.sha256(b).digest()
 
-# ---- utils ----
-def sha256(b): return hashlib.sha256(b).digest()
-def ripemd160(b): return hashlib.new('ripemd160', b).digest()
-def h160(b): return ripemd160(sha256(b))
-def hmac_sha512(key, data): return hmac.new(key, data, hashlib.sha512).digest()
+def ripemd160(b: bytes) -> bytes:
+    h = hashlib.new('ripemd160'); h.update(b); return h.digest()
 
-# ---- BIP39 ----
-def load_wordlist():
-    if not os.path.exists(WORDLIST_PATH):
-        die(f"Missing wordlist at {WORDLIST_PATH}. Copy english.txt into data/bip39_english.txt")
-    with open(WORDLIST_PATH, "r", encoding="utf-8") as f:
-        words = [w.strip() for w in f.readlines() if w.strip()]
-    if len(words) != 2048: die("wordlist must have 2048 words")
-    return words
+def hash160(b: bytes) -> bytes:
+    return ripemd160(sha256(b))
 
-def entropy_to_mnemonic(entropy: bytes, words):
-    ENT = len(entropy)*8
-    if ENT not in (128,160,192,224,256): die("entropy must be 128..256 bits / 16..32 bytes")
-    cs = sha256(entropy)[0]
-    cs_bits = ENT//32
-    data = int.from_bytes(entropy, 'big')
-    data = (data << cs_bits) | (cs >> (8 - cs_bits))
-    nwords = (ENT + cs_bits)//11
-    out = []
-    for i in range(nwords):
-        idx = (data >> (11*(nwords-1-i))) & 0x7FF
-        out.append(words[idx])
-    return " ".join(out)
+def int_to_big_endian(i: int, length: int) -> bytes:
+    return i.to_bytes(length, 'big')
 
-def mnemonic_to_seed(mnemonic: str, passphrase: str = "") -> bytes:
-    salt = ("mnemonic" + passphrase).encode()
-    return hashlib.pbkdf2_hmac("sha512", mnemonic.encode(), salt, 2048, dklen=64)
+def big_endian_to_int(b: bytes) -> int:
+    return int.from_bytes(b, 'big')
 
-# ---- BIP32/84 ----
-# secp256k1
-P  = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
-N  = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
-Gx = 55066263022277343669578718895168534326250603453777594175500187360389116729240
-Gy = 32670510020758816978083085130507043184471273380659243275938904335757337482424
+def ser32(i: int) -> bytes:
+    return int_to_big_endian(i, 4)
 
-def inv(n): return pow(n, P-2, P)
-def _pt_add(P1, P2):
-    if P1 is None: return P2
-    if P2 is None: return P1
-    x1,y1 = P1; x2,y2 = P2
-    if x1 == x2 and (y1 + y2) % P == 0: return None
-    if x1 == x2 and y1 == y2:
-        lam = (3*x1*x1) * inv(2*y1) % P
-    else:
-        lam = (y2 - y1) * inv((x2 - x1) % P) % P
-    x3 = (lam*lam - x1 - x2) % P
-    y3 = (lam*(x1 - x3) - y1) % P
-    return (x3, y3)
+def ser256(i: int) -> bytes:
+    return int_to_big_endian(i, 32)
 
-def _pt_mul(k, P0=(Gx, Gy)):
-    if k % N == 0 or k <= 0: raise ValueError("bad priv")
-    Q = None; add = P0
-    while k:
-        if k & 1: Q = _pt_add(Q, add)
-        add = _pt_add(add, add)
-        k >>= 1
-    return Q
+def parse256(b: bytes) -> int:
+    return big_endian_to_int(b)
 
-def ser32(i): return i.to_bytes(4, 'big')
-def ser256(i): return i.to_bytes(32, 'big')
-def parse256(b): return int.from_bytes(b, 'big')
-
-# BIP32 serialization
-VERSION_XPRV = 0x0488ADE4
-VERSION_XPUB = 0x0488B21E
-
-def CKD_priv(kpar, cpar, i):
-    if i >= 0x80000000:  # hardened
-        data = b'\x00' + ser256(kpar) + ser32(i)
-    else:
-        x, y = _pt_mul(kpar)
-        Kpar = b'\x04' + ser256(x) + ser256(y)
-        data = Kpar + ser32(i)
-    I = hmac_sha512(cpar, data)
-    Il, Ir = I[:32], I[32:]
-    ki = (parse256(Il) + kpar) % N
-    if ki == 0: return CKD_priv(kpar, cpar, i+1)
-    return ki, Ir
-
-def master_from_seed(seed):
-    I = hmac_sha512(b"Bitcoin seed", seed)
-    Il, Ir = I[:32], I[32:]
-    k = parse256(Il)
-    if k == 0 or k >= N: die("invalid master key")
-    return k, Ir
-
-def base58check(b: bytes) -> str:
-    # Base58Check
-    ALPH = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-    chk = sha256(sha256(b))[:4]
-    x = int.from_bytes(b+chk, 'big')
-    s = ""
-    while x > 0:
-        x, r = divmod(x, 58)
-        s = ALPH[r] + s
+# --------- Base58Check (for xpub/zpub) ---------
+_ALPHABET = b'123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+def b58encode(b: bytes) -> bytes:
+    n = int.from_bytes(b, 'big')
+    out = bytearray()
+    while n > 0:
+        n, rem = divmod(n, 58)
+        out.append(_ALPHABET[rem])
     # leading zeros
-    pad = 0
-    for c in (b+chk):
-        if c == 0: pad += 1
-        else: break
-    return "1"*pad + s
+    for byte in b:
+        if byte == 0:
+            out.append(_ALPHABET[0])
+        else:
+            break
+    return bytes(out[::-1])
 
-def ser_pub_compressed(k):
-    x, y = _pt_mul(k)
-    prefix = 0x02 | (y & 1)
-    return bytes([prefix]) + ser256(x)
+def base58check(version: bytes, payload: bytes) -> str:
+    data = version + payload
+    checksum = sha256(sha256(data))[:4]
+    return b58encode(data + checksum).decode()
 
-def xpub_from_priv(k, c, depth, fingerprint, childnum, version=VERSION_XPUB):
-    pub = ser_pub_compressed(k)
-    data = (version.to_bytes(4,'big') +
-            bytes([depth]) +
-            fingerprint +
-            ser32(childnum) +
-            c +
-            pub)
-    return base58check(data)
-
-def fingerprint_from_pub(pubkey_compressed):
-    # parent fingerprint = first 4 bytes of HASH160(compressed pubkey)
-    return h160(pubkey_compressed)[:4]
-
-# bech32 address
-BECH32_ALPH = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-def bech32_polymod(values):
+# --------- Bech32 (BIP-173) ---------
+# Minimal bech32 + segwit v0 encoder
+BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+def _bech32_polymod(values):
     GEN = [0x3b6a57b2,0x26508e6d,0x1ea119fa,0x3d4233dd,0x2a1462b3]
     chk = 1
     for v in values:
@@ -175,153 +79,303 @@ def bech32_polymod(values):
             chk ^= GEN[i] if ((b >> i) & 1) else 0
     return chk
 
-def bech32_hrp_expand(hrp):
+def _bech32_hrp_expand(hrp):
     return [ord(x) >> 5 for x in hrp] + [0] + [ord(x) & 31 for x in hrp]
 
-def bech32_create_checksum(hrp, data):
-    values = bech32_hrp_expand(hrp) + data
-    polymod = bech32_polymod(values + [0,0,0,0,0,0]) ^ 1
+def _bech32_create_checksum(hrp, data):
+    values = _bech32_hrp_expand(hrp) + data
+    polymod = _bech32_polymod(values + [0,0,0,0,0,0]) ^ 1
     return [(polymod >> 5*(5-i)) & 31 for i in range(6)]
 
 def bech32_encode(hrp, data):
-    combined = data + bech32_create_checksum(hrp, data)
-    return hrp + '1' + ''.join([BECH32_ALPH[d] for d in combined])
+    combined = data + _bech32_create_checksum(hrp, data)
+    return hrp + '1' + ''.join([BECH32_CHARSET[d] for d in combined])
 
-def convertbits(data, frombits, tobits, pad=True):
+def convertbits(data: bytes, frombits: int, tobits: int, pad: bool = True) -> Optional[List[int]]:
     acc = 0; bits = 0; ret = []
     maxv = (1 << tobits) - 1
+    max_acc = (1 << (frombits + tobits - 1)) - 1
     for value in data:
-        if value < 0 or (value >> frombits): return None
-        acc = (acc << frombits) | value
+        if value < 0 or value >> frombits:
+            return None
+        acc = ((acc << frombits) | value) & max_acc
         bits += frombits
         while bits >= tobits:
             bits -= tobits
             ret.append((acc >> bits) & maxv)
     if pad:
-        if bits: ret.append((acc << (tobits - bits)) & maxv)
-    elif bits >= frombits or ((acc << (tobits - bits)) & maxv): return None
+        if bits:
+            ret.append((acc << (tobits - bits)) & maxv)
+    elif bits >= frombits or ((acc << (tobits - bits)) & maxv):
+        return None
     return ret
 
-def p2wpkh_bech32(pubkey_compressed, hrp="bc"):
-    # HASH160(compressed pubkey)
-    vh160 = h160(pubkey_compressed)
-    # witness version 0 + program (20 bytes)
-    data = [0] + convertbits(list(vh160), 8, 5)
+def encode_p2wpkh(pubkey_compressed: bytes, hrp='bc') -> str:
+    # witness version 0 + program = HASH160(pubkey)
+    prog = hash160(pubkey_compressed)
+    five = convertbits(prog, 8, 5)
+    data = [0] + five
     return bech32_encode(hrp, data)
 
-def derive_account_xpub_zpub(seed, account=0, purpose=84, coin=0):
-    # m → m/84' → m/84'/0' → m/84'/0'/0'
-    k, c = master_from_seed(seed)
-    # depth=0
-    parent_pub = ser_pub_compressed(k)
-    parent_fpr = fingerprint_from_pub(parent_pub)
-    depth = 0; childnum = 0
+# --------- secp256k1 (pure Python) ---------
+P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+A = 0
+B = 7
+Gx = 55066263022277343669578718895168534326250603453777594175500187360389116729240
+Gy = 32670510020758816978083085130507043184471273380659243275938904335757337482424
+G = (Gx, Gy)
 
-    def derive_hardened(k,c, idx, depth, parent_pub):
-        I = hmac_sha512(c, b'\x00' + ser256(k) + ser32(idx | 0x80000000))
-        Il, Ir = I[:32], I[32:]
-        ki = (parse256(Il) + k) % N
-        if ki == 0: return derive_hardened(k, c, idx+1, depth, parent_pub)
-        depth += 1
-        fpr = fingerprint_from_pub(ser_pub_compressed(k))
-        return ki, Ir, depth, fpr, idx | 0x80000000
+def inverse_mod(a: int, n: int = P) -> int:
+    return pow(a, -1, n)
 
-    # m/84'
-    k,c,depth,parent_fpr,childnum = derive_hardened(k,c,purpose,depth,parent_pub)
-    # m/84'/0'
-    k,c,depth,parent_fpr,childnum = derive_hardened(k,c,coin,depth,parent_pub)
-    # m/84'/0'/0'
-    k,c,depth,parent_fpr,childnum = derive_hardened(k,c,0,depth,parent_pub)
+def is_on_curve(Pt: Optional[Tuple[int,int]]) -> bool:
+    if Pt is None: return True
+    x,y = Pt
+    return (y*y - (x*x*x + A*x + B)) % P == 0
 
-    # xpub serialization for account (depth 3)
-    pub = ser_pub_compressed(k)
-    acc_fpr = fingerprint_from_pub(pub)  # parent fingerprint for next level
-    xpub = xpub_from_priv(k, c, depth, parent_fpr, childnum, VERSION_XPUB)
+def point_add(Pt: Optional[Tuple[int,int]], Qt: Optional[Tuple[int,int]]) -> Optional[Tuple[int,int]]:
+    if Pt is None: return Qt
+    if Qt is None: return Pt
+    x1,y1 = Pt; x2,y2 = Qt
+    if x1 == x2 and y1 != y2: return None
+    if Pt == Qt:
+        m = (3*x1*x1) * inverse_mod(2*y1, P) % P
+    else:
+        m = (y2 - y1) * inverse_mod((x2 - x1) % P, P) % P
+    x3 = (m*m - x1 - x2) % P
+    y3 = (m*(x1 - x3) - y1) % P
+    return (x3, y3)
 
-    # zpub (BIP84): same payload as xpub but with version bytes 0x04b24746
-    VERSION_ZPUB = 0x04B24746
-    zpub = base58check(VERSION_ZPUB.to_bytes(4,'big') + xpub_decode_payload(xpub)[4:])
-    return k, c, depth, parent_fpr, childnum, xpub, zpub
+def scalar_mult(k: int, Pt: Optional[Tuple[int,int]]) -> Optional[Tuple[int,int]]:
+    if k % N == 0 or Pt is None: return None
+    if k < 0: return scalar_mult(-k, (Pt[0], (-Pt[1]) % P))
+    result = None
+    addend = Pt
+    while k:
+        if k & 1:
+            result = point_add(result, addend)
+        addend = point_add(addend, addend)
+        k >>= 1
+    return result
 
-def xpub_decode_payload(xpub: str) -> bytes:
-    # decode base58check to get raw payload
-    ALPH = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-    x = 0
-    for ch in xpub:
-        if ch not in ALPH: continue
-        x = x*58 + ALPH.index(ch)
-    raw = x.to_bytes((x.bit_length()+7)//8,'big')
-    # re-add leading zeros
-    pad = 0
-    for ch in xpub:
-        if ch == '1': pad += 1
-        else: break
-    raw = b'\x00'*pad + raw
-    # strip checksum
-    if len(raw) < 4: die("xpub too short")
-    payload, chk = raw[:-4], raw[-4:]
-    if sha256(sha256(payload))[:4] != chk: die("xpub checksum fail")
-    return payload
+def serP(Pt: Tuple[int,int], compressed=True) -> bytes:
+    x,y = Pt
+    if not compressed:
+        return b'\x04' + ser256(x) + ser256(y)
+    return (b'\x02' if (y % 2 == 0) else b'\x03') + ser256(x)
 
-def derive_receive_addresses(seed, count=10, hrp="bc"):
-    # derive account node m/84'/0'/0' and then non-hardened child m/84'/0'/0'/0/i
-    k, c = master_from_seed(seed)
-    # m/84'
-    k,c,_,_,_ = CKD_priv(k,c,PURPOSE | 0x80000000)
-    # m/84'/0'
-    k,c,_,_,_ = CKD_priv(k,c,COIN | 0x80000000)
-    # m/84'/0'/0'
-    k,c,_,_,_ = CKD_priv(k,c,0 | 0x80000000)
-    # /0 external
-    k0, c0 = CKD_priv(k,c,CHANGE)
+# --------- BIP39 ---------
+THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+WORDLIST_PATH = os.path.join(THIS_DIR, "..", "data", "bip39_english.txt")
+
+def load_wordlist() -> List[str]:
+    with open(WORDLIST_PATH, "r", encoding="utf-8") as f:
+        words = [w.strip() for w in f.readlines()]
+    if len(words) != 2048:
+        raise RuntimeError("BIP39 wordlist must have 2048 words")
+    return words
+
+def entropy_to_mnemonic(entropy: bytes, words: List[str]) -> str:
+    ENT = len(entropy) * 8
+    CS = ENT // 32
+    hash_ = sha256(entropy)
+    checksum_bits = big_endian_to_int(hash_) >> (256 - CS)
+    ent_int = big_endian_to_int(entropy)
+    acc = (ent_int << CS) | checksum_bits
+    num_words = (ENT + CS) // 11
+    out = []
+    for i in range(num_words):
+        idx = (acc >> (11*(num_words-1-i))) & 0x7FF
+        out.append(words[idx])
+    return ' '.join(out)
+
+def mnemonic_to_seed(mnemonic: str, passphrase: str = "") -> bytes:
+    mnemonic = unicodedata.normalize("NFKD", mnemonic.strip())
+    salt = "mnemonic" + unicodedata.normalize("NFKD", passphrase)
+    return hashlib.pbkdf2_hmac("sha512", mnemonic.encode(), salt.encode(), 2048)
+
+# --------- BIP32 ---------
+BIP32_HARDEN = 0x80000000
+
+class Node:
+    def __init__(self, k: int, c: bytes, depth: int, parent_fpr: bytes, child_num: int):
+        self.k = k            # private key int
+        self.c = c            # chain code 32 bytes
+        self.depth = depth
+        self.parent_fpr = parent_fpr  # 4 bytes
+        self.child_num = child_num    # 4 bytes
+
+    @property
+    def P(self) -> Tuple[int,int]:
+        return scalar_mult(self.k, G)
+
+    @property
+    def pubkey_compressed(self) -> bytes:
+        return serP(self.P, compressed=True)
+
+    @property
+    def fingerprint(self) -> bytes:
+        return hash160(self.pubkey_compressed)[:4]
+
+def master_from_seed(seed: bytes) -> Node:
+    I = hmac_sha512(b"Bitcoin seed", seed)
+    k = parse256(I[:32]) % N
+    if k == 0: raise RuntimeError("Invalid master key")
+    c = I[32:]
+    return Node(k, c, depth=0, parent_fpr=b"\x00\x00\x00\x00", child_num=0)
+
+def CKD_priv(node: Node, index: int) -> Node:
+    if index & BIP32_HARDEN:
+        data = b"\x00" + ser256(node.k) + ser32(index)
+    else:
+        data = node.pubkey_compressed + ser32(index)
+    I = hmac_sha512(node.c, data)
+    IL, IR = I[:32], I[32:]
+    ki = (parse256(IL) + node.k) % N
+    if parse256(IL) >= N or ki == 0:
+        # very unlikely, skip to next index (spec)
+        return CKD_priv(node, index+1)
+    return Node(ki, IR, depth=node.depth+1, parent_fpr=node.fingerprint, child_num=index)
+
+def derive_path(node: Node, path: str) -> Node:
+    """
+    path like: m/84'/0'/0'/0/0
+    """
+    if not path.startswith("m/"): raise ValueError("Path must start with m/")
+    cur = node
+    for p in path.lstrip("m/").split("/"):
+        if p == "": continue
+        hard = p.endswith("'")
+        idx = int(p[:-1]) if hard else int(p)
+        if hard: idx |= BIP32_HARDEN
+        cur = CKD_priv(cur, idx)
+    return cur
+
+# --------- SLIP-132 (zpub) + xpub serialization ---------
+VER_XPUB = bytes.fromhex("0488B21E")   # xpub
+VER_ZPUB = bytes.fromhex("04B24746")   # zpub (BIP84 mainnet)
+
+def serialize_xpub(version: bytes, node: Node) -> str:
+    depth = int_to_big_endian(node.depth, 1)
+    child = ser32(node.child_num)
+    data = (version + depth + node.parent_fpr + child + node.c + node.pubkey_compressed)
+    return base58check(version, depth + node.parent_fpr + child + node.c + node.pubkey_compressed)
+
+# --------- Main derivation helpers ---------
+PURPOSE = 84
+COIN_TYPE = 0           # 0 = mainnet
+ACCOUNT = 0
+CHANGE_EXTERNAL = 0     # receive chain
+
+DEFAULT_ADDR_COUNT = 5
+
+def make_account_node(master: Node) -> Node:
+    # m / 84' / 0' / 0'
+    return derive_path(master, f"m/{PURPOSE}'/{COIN_TYPE}'/{ACCOUNT}'")
+
+def zpub_xpub_from_account(acc: Node) -> Tuple[str, str]:
+    # acc.depth == 3; parent_fpr is fingerprint of m/84'/0'
+    # serialize with zpub and xpub version bytes
+    # (We reuse the same payload but swap version bytes for compatibility)
+    depth = int_to_big_endian(acc.depth, 1)
+    child = ser32(acc.child_num)
+    payload = depth + acc.parent_fpr + child + acc.c + acc.pubkey_compressed
+    zpub = base58check(VER_ZPUB, payload)
+    xpub = base58check(VER_XPUB, payload)
+    return zpub, xpub
+
+def derive_receive_addresses(seed: bytes, count: int = DEFAULT_ADDR_COUNT, hrp: str = "bc") -> Tuple[str, str, List[str]]:
+    master = master_from_seed(seed)
+    acc = make_account_node(master)                     # m/84'/0'/0'
+    zpub, xpub = zpub_xpub_from_account(acc)
+    # external chain m/84'/0'/0'/0
+    ext = CKD_priv(acc, CHANGE_EXTERNAL)
     addrs = []
     for i in range(count):
-        ki, ci = CKD_priv(k0,c0,i)
-        pubc = ser_pub_compressed(ki)
-        addr = p2wpkh_bech32(pubc, hrp=hrp)
+        ch = CKD_priv(ext, i)
+        addr = encode_p2wpkh(ch.pubkey_compressed, hrp=hrp)
         addrs.append(addr)
-    return addrs
+    return zpub, xpub, addrs
 
-def main():
-    print("=== offline-keykit :: btc_bip39_tool (air-gapped) ===")
-    words = load_wordlist()
+# --------- Mnemonic generation ---------
+def gen_entropy(bits: int) -> bytes:
+    if bits not in (128, 256):
+        raise ValueError("bits must be 128 or 256")
+    return secrets.token_bytes(bits // 8)
 
-    print("\nChoose:")
-    print("  1) Generate 24-word mnemonic (recommended)")
-    print("  2) Generate 12-word mnemonic")
-    print("  3) Enter existing mnemonic")
-    choice = ask("Select [1/2/3]: ").strip()
+def dice_entropy(num_rolls: int = 99) -> bytes:
+    print("\nDice mode selected. Roll a six-sided die ~99 times.")
+    print("Enter the sequence as digits 1-6 (spaces optional). Example: 163245... (press Enter when done)")
+    s = input("Dice rolls: ").strip().replace(" ", "")
+    if not s or any(ch not in "123456" for ch in s):
+        raise ValueError("Invalid dice input")
+    # Map 1..6 into bits (base-6 to bytes). Simpler: hash the raw string to 32 bytes.
+    return sha256(s.encode())
 
-    if choice == "3":
-        mnemonic = ask("\nPaste mnemonic (space-separated words): ").strip()
+def choose_mnemonic(words: List[str]) -> Tuple[str, str]:
+    print("\nChoose:\n  1) Generate 24-word mnemonic (recommended)\n  2) Generate 12-word mnemonic\n  3) Enter existing mnemonic")
+    sel = input("Select [1/2/3]: ").strip()
+    if sel == "1":
+        ent = gen_entropy(256)
+        mnemonic = entropy_to_mnemonic(ent, words)
+    elif sel == "2":
+        ent = gen_entropy(128)
+        mnemonic = entropy_to_mnemonic(ent, words)
+    elif sel == "3":
+        print("\nPaste your mnemonic (exact words, spaces between them):")
+        mnemonic = input("> ").strip()
     else:
-        bits = 256 if choice == "1" else 128
-        entropy = os.urandom(bits//8)
-        mnemonic = entropy_to_mnemonic(entropy, words)
+        print("Invalid selection."); sys.exit(1)
 
-    use_pp = ask("\nAdd a BIP39 passphrase? Highly recommended. [y/N]: ").strip().lower() == "y"
+    use_pp = input("\nAdd a BIP39 passphrase? Highly recommended. [y/N]: ").strip().lower() == "y"
     passphrase = ""
     if use_pp:
-        passphrase = ask("Enter passphrase (case-sensitive; WRITE ON PAPER): ")
+        passphrase = getpass.getpass("Enter passphrase (case-sensitive; WRITE ON PAPER): ")
+        # simple confirmation
+        passphrase2 = getpass.getpass("Re-enter passphrase: ")
+        if passphrase2 != passphrase:
+            print("Passphrases do not match."); sys.exit(1)
 
+    print("\n=== WRITE THESE ON PAPER (NEVER DIGITIZE) ===")
+    print("Mnemonic:\n" + textwrap.fill(mnemonic, width=88))
+    if use_pp:
+        print("\nBIP39 passphrase:  (write on separate paper)")
+    else:
+        print("\n(No BIP39 passphrase)")
+    print("============================================\n")
+    return mnemonic, passphrase
+
+# --------- CLI ---------
+def main():
+    # Load wordlist
+    try:
+        words = load_wordlist()
+    except Exception as e:
+        print("Error loading BIP39 wordlist:", e)
+        print("Expected at:", WORDLIST_PATH)
+        sys.exit(1)
+
+    mnemonic, passphrase = choose_mnemonic(words)
     seed = mnemonic_to_seed(mnemonic, passphrase)
 
-    # xpub/zpub and first addresses
-    _,_,depth, fpr, childnum, xpub, zpub = derive_account_xpub_zpub(seed, ACCOUNT, PURPOSE, COIN)
-    addrs = derive_receive_addresses(seed, count=DEFAULT_ADDR_COUNT, hrp="bc")
+    # derive zpub/xpub and first addresses
+    zpub, xpub, addrs = derive_receive_addresses(seed, count=DEFAULT_ADDR_COUNT, hrp="bc")
 
-    print("\n--- YOUR BTC SECRETS (WRITE ON PAPER) ---")
-    print(mnemonic)
-    if use_pp:
-        print("\n[BIP39 passphrase: WRITE ON SEPARATE PAPER]")
-    print("\n--- PUBLIC (BRING ONLINE) ---")
-    print("Derivation: m/84'/0'/0'  (BIP84 P2WPKH)")
-    print("xpub:", xpub)
-    print("zpub:", zpub)
-    print("\nFirst receive addresses (m/84'/0'/0'/0/i):")
+    print("Account (BIP84, m/84'/0'/0'):")
+    print("  zpub:", zpub)
+    print("  xpub:", xpub)
+    print("\nFirst receive addresses (bech32, m/84'/0'/0'/0/i):")
     for i, a in enumerate(addrs):
-        print(f"  {i}: {a}")
-    print("\nDone. Bring ONLY xpub/zpub + addresses online. Keep mnemonic/passphrase PAPER-COLD.\n")
+        print(f"  [{i}] {a}")
+
+    print("\nSAFE TO TAKE ONLINE:")
+    print("  - zpub")
+    print("  - xpub (compat)")
+    print("  - addresses above")
+    print("\nNEVER TAKE ONLINE:")
+    print("  - mnemonic")
+    print("  - BIP39 passphrase\n")
 
 if __name__ == "__main__":
     main()
