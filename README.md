@@ -1,4 +1,4 @@
-# offline-keykit
+# Offline-Keykit
 
 > **Air-gapped key generation tools** for Bitcoin (BIP39/BIP84 xpub) and EVM (Ethereum/Base) with **zero third-party wallet apps**. Designed for paper-cold workflows: create keys on a **temporary offline OS**, write secrets on paper, bring only public data (xpub/address) online.
 
@@ -77,3 +77,96 @@ The scripts you’ll use (added in the next commits):
 
    ```bash
    python3 ~/Desktop/btc_tool.py
+Choose Dice mode (you’ll roll a six-sided die ~99 times) or System entropy.
+
+The script prints:
+
+24-word mnemonic (write on paper),
+
+optional BIP39 passphrase (write on separate paper),
+
+zpub/xpub for BIP84 path m/84'/0'/0',
+
+first few receive addresses for sanity check.
+
+Do not save the mnemonic digitally. If you must save the xpub, save it on USB-B in a text file (public).
+
+4) Generate EVM private key and address (offline)
+In Terminal (still offline):
+
+bash
+Copy
+Edit
+python3 ~/Desktop/evm_tool.py
+Choose Dice mode or System entropy.
+
+The script prints:
+
+Private key (64-hex) — write on paper (two copies).
+
+Checksummed address — you can save this to USB-B (public).
+
+We keep the EVM PK on paper for maximum safety. Later, you may type it once into a password manager on the machine that actually signs transactions.
+
+5) Shut down (wipe RAM)
+Eject USB-B (now containing public xpub/address if you saved them).
+
+Power off the Live Ubuntu. Remove both USBs.
+
+6) Bring public data online
+On your online machine, plug USB-B and copy only:
+
+The BTC xpub + path m/84'/0'/0'
+
+The EVM address
+
+Use these to configure your relayer/bridge. Never bring mnemonics/private keys online.
+
+Files (to be added next)
+scripts/btc_tool.py — Single-file BTC offline tool (BIP39/BIP32/BIP84, Base58Check).
+
+scripts/evm_tool.py — Single-file EVM offline tool (pure-Python secp256k1 + keccak).
+
+data/bip39_english.txt — Official 2048-word BIP39 wordlist (English).
+
+LICENSE — Apache-2.0.
+
+As we add each file, we’ll include click-to-create links in this README and commit messages.
+
+Auditing the scripts
+Both scripts are standalone and readable end-to-end.
+
+No network calls.
+
+Use only Python standard library (plus our embedded math/keccak).
+
+You can diff the outputs with known wallets (watch-only, xpub/address level) to confirm derivations match BIP specs.
+
+FAQ
+Q: Why not Sparrow/Ledger/etc.?
+A: Great tools, but we wanted zero third-party apps and fully inspectable code paths. This repo demonstrates that approach.
+
+Q: Can I use a BIP39 passphrase for BTC?
+A: Yes, and it’s recommended. Store it on a separate paper from the mnemonic.
+
+Q: Is dice entropy really necessary?
+A: It’s optional. Dice give human-verifiable randomness. System entropy on an offline OS is also fine.
+
+Q: Where should I store the papers?
+A: Two separate physical locations (e.g., two safes). Never photograph them.
+
+Disclaimer
+This software is provided “as is”, without warranty of any kind. Use at your own risk. Cryptographic mistakes can be irreversible. Read and understand the code before using with significant value.
+
+yaml
+Copy
+Edit
+
+---
+
+## 3) Add a LICENSE file (Apache-2.0)
+
+Click and paste:
+
+- **Create LICENSE:**  
+  https://github.com/Raabx/offline-keykit/new/main?filename=LICENSE
