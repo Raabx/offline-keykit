@@ -1,5 +1,3 @@
-You're right—my bad. Here it is as **one single, uninterrupted code block** you can copy and paste:
-
 ```markdown
 # Offline-Keykit
 
