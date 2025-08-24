@@ -1,3 +1,6 @@
+You're right—my bad. Here it is as **one single, uninterrupted code block** you can copy and paste:
+
+```markdown
 # Offline-Keykit
 
 > **Air-gapped key generation tools** for Bitcoin (BIP39/BIP84 xpub) and EVM (Ethereum/Base) with **zero third-party wallet apps**. Designed for paper-cold workflows: create keys on a **temporary offline OS**, write secrets on paper, bring only public data (xpub/address) online.
@@ -8,7 +11,21 @@
   - **BTC**: 24-word mnemonic (+ optional BIP39 passphrase), **xpub/zpub**, and first receive addresses (BIP84 `m/84'/0'/0'`).
   - **EVM**: 32-byte private key (hex), **checksummed address**.
 
-> ⚠️ This repo ships **code only**. **You** are responsible for following the air-gap procedure. Never run these scripts on an internet-connected machine. Never store seeds in cloud docs or screenshots. Print/write on paper only.
+> ⚠️ **Important (Air-gap procedure):** This repo ships **code only**. **You** are responsible for following the offline/air-gap workflow. Never run these scripts on an internet-connected machine. Never store seeds in cloud docs or screenshots. Print/write on paper only.
+
+---
+
+## Table of Contents
+
+- [Why this exists](#why-this-exists)
+- [Threat model (what this protects against)](#threat-model-what-this-protects-against)
+- [Tools & workflow (at a glance)](#tools--workflow-at-a-glance)
+- [Step-by-step (non-technical, click-through)](#step-by-step-non-technical-click-through)
+- [Files (to be added next)](#files-to-be-added-next)
+- [Auditing the scripts](#auditing-the-scripts)
+- [FAQ](#faq)
+- [License](#license)
+- [Disclaimer](#disclaimer)
 
 ---
 
@@ -23,14 +40,14 @@ We needed a transparent, reproducible, auditable way to generate keys for the RA
 
 ## Threat model (what this protects against)
 
-- **Compromised online dev laptop**: No seeds are ever typed there. Only public xpub/address go online.
-- **GitHub compromise**: Repo never contains secrets. A `.env.sample` may contain public addresses only.
-- **Password manager compromise**: You may choose to store the **EVM private key** in a password manager, but **not** your BTC seed (paper only). Your call.
+**Protects against:**
+- **Compromised online dev laptop:** No seeds are ever typed there. Only public xpub/address go online.
+- **GitHub compromise:** Repo never contains secrets. A `.env.sample` may contain public addresses only.
+- **Password manager compromise:** You may choose to store the **EVM private key** in a password manager, but **not** your BTC seed (paper only). Your call.
 
-What it does **not** protect against:
-
-- **Paper theft/duplication**: If someone copies your paper seed/key, they control funds. Use two separate safes. Consider a BIP39 passphrase for BTC.
-- **Carelessness**: Screenshots, phone pics, printing over Wi-Fi — don’t.
+**Does not protect against:**
+- **Paper theft/duplication:** If someone copies your paper seed/key, they control funds. Use two separate safes. Consider a BIP39 passphrase for BTC.
+- **Carelessness:** Screenshots, phone pics, printing over Wi-Fi — don’t.
 
 ---
 
@@ -53,107 +70,118 @@ The scripts you’ll use (added in the next commits):
 ## Step-by-step (non-technical, click-through)
 
 ### 0) Prepare two USB drives
-- **USB-A**: Live Ubuntu installer (we’ll boot from this).
-- **USB-B**: A plain FAT32 stick to carry the Python scripts **into** the offline OS and carry public outputs **out**.
+
+- **USB-A:** Live Ubuntu installer (we’ll boot from this).
+- **USB-B:** A plain FAT32 stick to carry the Python scripts **into** the offline OS and carry public outputs **out**.
 
 ### 1) Make a one-time offline OS
+
 1. Download **Ubuntu Desktop** ISO from ubuntu.com on your normal computer.
 2. Use **balenaEtcher** (or Rufus on Windows) to write the ISO to **USB-A**.
 3. **Shut down** your computer.
 4. **Unplug Ethernet**; keep Wi-Fi physically off (hardware switch or BIOS).
 5. Boot from **USB-A** (select it in BIOS boot menu), choose **“Try Ubuntu”** (do not install).
-6. Verify you’re offline: network icon should show **disconnected**.
+6. Verify you’re offline: the network icon should show **disconnected**.
 
 ### 2) Copy scripts into the offline OS
+
 1. On your online machine, download this repo as ZIP or `git clone` (for code review).
 2. Copy `scripts/*.py` and `data/bip39_english.txt` to **USB-B**.
 3. Plug **USB-B** into the **offline** Ubuntu. Copy files to **Desktop**.
 
-*(The scripts will be added in commits after this README. See “Files” below.)*
+> *(The scripts will be added in commits after this README. See “Files” below.)*
 
 ### 3) Generate **BTC** seed and **xpub** (offline)
-1. Open Terminal (offline).
-2. Run the BTC tool:
 
-   ```bash
-   python3 ~/Desktop/btc_tool.py
-Choose Dice mode (you’ll roll a six-sided die ~99 times) or System entropy.
+1. Open **Terminal** (still offline).
+2. Run the BTC tool (adjust path if needed):
 
-The script prints:
+        python3 ~/Desktop/btc_tool.py
 
-24-word mnemonic (write on paper),
+3. Choose **Dice** mode (you’ll roll a six-sided die ~99 times) **or** **System entropy**.
+4. The script prints:
+   - **24-word mnemonic** — *write on paper*.
+   - **Optional BIP39 passphrase** — *write on separate paper*.
+   - **zpub/xpub** for BIP84 path `m/84'/0'/0'`.
+   - First few **receive addresses** for sanity check.
+5. Do **not** save the mnemonic digitally. If you must save the xpub, save it on **USB-B** in a text file (public).
 
-optional BIP39 passphrase (write on separate paper),
+### 4) Generate **EVM** private key and address (offline)
 
-zpub/xpub for BIP84 path m/84'/0'/0',
+1. In **Terminal** (still offline), run:
 
-first few receive addresses for sanity check.
+        python3 ~/Desktop/evm_tool.py
 
-Do not save the mnemonic digitally. If you must save the xpub, save it on USB-B in a text file (public).
+2. Choose **Dice** mode or **System entropy**.
+3. The script prints:
+   - **Private key (64-hex)** — *write on paper (two copies)*.
+   - **Checksummed address** — you can save this to **USB-B** (public).
+4. We keep the EVM PK on paper for maximum safety. Later, you may type it **once** into a password manager on the machine that actually signs transactions.
 
-4) Generate EVM private key and address (offline)
-In Terminal (still offline):
+### 5) Shut down (wipe RAM)
 
-python3 ~/Desktop/evm_tool.py
-Choose Dice mode or System entropy.
+1. Eject **USB-B** (now containing public xpub/address if you saved them).
+2. Power off the Live Ubuntu. Remove both USBs.
 
-The script prints:
+### 6) Bring public data online
 
-Private key (64-hex) — write on paper (two copies).
+On your online machine, plug **USB-B** and copy **only**:
 
-Checksummed address — you can save this to USB-B (public).
+- The **BTC xpub** + path `m/84'/0'/0'`
+- The **EVM address**
 
-We keep the EVM PK on paper for maximum safety. Later, you may type it once into a password manager on the machine that actually signs transactions.
+Use these to configure your relayer/bridge. **Never** bring mnemonics/private keys online.
 
-5) Shut down (wipe RAM)
-Eject USB-B (now containing public xpub/address if you saved them).
+---
 
-Power off the Live Ubuntu. Remove both USBs.
+## Files (to be added next)
 
-6) Bring public data online
-On your online machine, plug USB-B and copy only:
+    scripts/
+      btc_tool.py        # Single-file BTC offline tool (BIP39/BIP32/BIP84, Base58Check)
+      evm_tool.py        # Single-file EVM offline tool (pure-Python secp256k1 + keccak)
+    data/
+      bip39_english.txt  # Official 2048-word BIP39 wordlist (English)
+    LICENSE              # Apache-2.0
 
-The BTC xpub + path m/84'/0'/0'
+> As we add each file, we’ll include click-to-create links in this README and commit messages.
 
-The EVM address
+---
 
-Use these to configure your relayer/bridge. Never bring mnemonics/private keys online.
+## Auditing the scripts
 
-Files (to be added next)
-scripts/btc_tool.py — Single-file BTC offline tool (BIP39/BIP32/BIP84, Base58Check).
+- Both scripts are **standalone** and readable end-to-end.
+- **No network calls.**
+- Use only Python standard library (plus embedded math/keccak where noted).
+- You can diff the outputs with known wallets (watch-only, xpub/address level) to confirm derivations match BIP specs.
 
-scripts/evm_tool.py — Single-file EVM offline tool (pure-Python secp256k1 + keccak).
+---
 
-data/bip39_english.txt — Official 2048-word BIP39 wordlist (English).
+## FAQ
 
-LICENSE — Apache-2.0.
-
-As we add each file, we’ll include click-to-create links in this README and commit messages.
-
-Auditing the scripts
-Both scripts are standalone and readable end-to-end.
-
-No network calls.
-
-Use only Python standard library (plus our embedded math/keccak).
-
-You can diff the outputs with known wallets (watch-only, xpub/address level) to confirm derivations match BIP specs.
-
-FAQ
-Q: Why not Sparrow/Ledger/etc.?
+**Q: Why not Sparrow/Ledger/etc.?**  
 A: Great tools, but we wanted zero third-party apps and fully inspectable code paths. This repo demonstrates that approach.
 
-Q: Can I use a BIP39 passphrase for BTC?
+**Q: Can I use a BIP39 passphrase for BTC?**  
 A: Yes, and it’s recommended. Store it on a separate paper from the mnemonic.
 
-Q: Is dice entropy really necessary?
+**Q: Is dice entropy really necessary?**  
 A: It’s optional. Dice give human-verifiable randomness. System entropy on an offline OS is also fine.
 
-Q: Where should I store the papers?
+**Q: Where should I store the papers?**  
 A: Two separate physical locations (e.g., two safes). Never photograph them.
 
-Disclaimer
-This software is provided “as is”, without warranty of any kind. Use at your own risk. Cryptographic mistakes can be irreversible. Read and understand the code before using with significant value.
+---
+
+## License
+
+Licensed under **Apache-2.0**. See `LICENSE`.
+
+---
+
+## Disclaimer
+
+This software is provided **“as is”**, without warranty of any kind. Use at your own risk. Cryptographic mistakes can be irreversible. **Read and understand the code** before using with significant value.
+```
 
 
 
