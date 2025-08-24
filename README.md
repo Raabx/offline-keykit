@@ -94,9 +94,6 @@ Do not save the mnemonic digitally. If you must save the xpub, save it on USB-B 
 4) Generate EVM private key and address (offline)
 In Terminal (still offline):
 
-bash
-Copy
-Edit
 python3 ~/Desktop/evm_tool.py
 Choose Dice mode or System entropy.
 
@@ -158,15 +155,5 @@ A: Two separate physical locations (e.g., two safes). Never photograph them.
 Disclaimer
 This software is provided “as is”, without warranty of any kind. Use at your own risk. Cryptographic mistakes can be irreversible. Read and understand the code before using with significant value.
 
-yaml
-Copy
-Edit
 
----
 
-## 3) Add a LICENSE file (Apache-2.0)
-
-Click and paste:
-
-- **Create LICENSE:**  
-  https://github.com/Raabx/offline-keykit/new/main?filename=LICENSE
